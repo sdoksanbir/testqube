@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <!-- Slightly inset tick so it doesn't touch edges when scaled -->
+  <polyline points="22,55 40,72 78,32"
+            fill="none"
+            stroke="#000000"
+            stroke-width="10"
+            stroke-linecap="round"
+            stroke-linejoin="round" />
+</svg>

@@ -1,0 +1,7 @@
+PyQt5
+PyQtWebEngine
+PyMuPDF
+numpy
+opencv-python
+reportlab
+Pillow

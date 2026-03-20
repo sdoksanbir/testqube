@@ -1,0 +1,993 @@
+# src/testmaker/services/pdf_exporter.py
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace, fields
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+import fitz  # PyMuPDF
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from testmaker.utils.paths import fonts_dir
+
+
+# Türkçe karakterleri destekleyen font yükle
+_roboto_font_loaded = False
+
+
+def _ensure_roboto_font():
+    """Roboto fontunu yükle (Türkçe karakterleri destekler)"""
+    global _roboto_font_loaded
+    if _roboto_font_loaded:
+        return
+
+    try:
+        roboto_path = fonts_dir() / "roboto" / "static" / "Roboto-Regular.ttf"
+        roboto_bold_path = fonts_dir() / "roboto" / "static" / "Roboto-Bold.ttf"
+
+        if roboto_path.exists():
+            pdfmetrics.registerFont(TTFont("Roboto", str(roboto_path)))
+        if roboto_bold_path.exists():
+            pdfmetrics.registerFont(TTFont("Roboto-Bold", str(roboto_bold_path)))
+
+        _roboto_font_loaded = True
+    except Exception:
+        # Font yüklenemezse varsayılan font kullanılacak
+        pass
+
+
+# -------------------------
+# Helpers
+# -------------------------
+def mm_to_pt(mm: float) -> float:
+    # 1 inch = 25.4 mm, 1 pt = 1/72 inch
+    return float(mm) * 72.0 / 25.4
+
+
+def preset_size_mm(preset: str) -> Tuple[float, float]:
+    p = (preset or "A4").upper().strip()
+
+    # ISO A series (mm)
+    iso_a = {
+        "A0": (841.0, 1189.0),
+        "A1": (594.0, 841.0),
+        "A2": (420.0, 594.0),
+        "A3": (297.0, 420.0),
+        "A4": (210.0, 297.0),
+        "A5": (148.0, 210.0),
+        "A6": (105.0, 148.0),
+    }
+    if p in iso_a:
+        return iso_a[p]
+
+    # ISO B series (common)
+    iso_b = {
+        "B4": (250.0, 353.0),
+        "B5": (176.0, 250.0),
+    }
+    if p in iso_b:
+        return iso_b[p]
+
+    # US sizes
+    if p in ("LETTER", "US LETTER"):
+        return 215.9, 279.4
+    if p == "LEGAL":
+        return 215.9, 355.6
+    if p in ("TABLOID", "LEDGER"):
+        return 279.4, 431.8  # 11x17 in
+    if p == "EXECUTIVE":
+        return 184.15, 266.7
+    if p == "FOLIO":
+        return 210.0, 330.0
+
+    # fallback
+    return 210.0, 297.0
+
+
+# -------------------------
+# Options
+# -------------------------
+@dataclass
+class ExportOptions:
+    # Meta
+    test_title: str = "TEST"
+    school_name: str = ""
+    branch_name: str = ""
+    teacher_name: str = ""
+
+    # Page size
+    page_preset: str = "A4"          # A4, A5, LETTER, LEGAL, CUSTOM
+    page_width_mm: float = 210.0     # used when CUSTOM
+    page_height_mm: float = 297.0    # used when CUSTOM
+    orientation: str = "portrait"    # portrait / landscape
+
+    # Advanced
+    smart_layout: bool = False
+    watermark_enabled: bool = False
+    watermark_text: str = ""
+    watermark_opacity: float = 0.12
+    center_line_enabled: bool = False
+    center_line_text: str = ""
+    center_line_bold: bool = False
+    center_line_color: str = "#000000"
+    center_line_text_direction: str = "up"  # up / down
+    line_color: str = "#000000"  # Tüm çizgiler için renk (sütun çizgisi, separator vb.)
+
+    # Layout
+    columns: int = 2                # 1..6
+    column_gap_mm: float = 8.0      # gap between columns in mm
+    margin_top_mm: float = 15.0
+    margin_bottom_mm: float = 15.0
+    margin_left_mm: float = 15.0
+    margin_right_mm: float = 15.0
+
+    # Spacing
+    question_gap_mm: float = 6.0        # normal
+    question_gap_spaced_mm: float = 12.0
+    spaced: bool = False
+    draw_separators: bool = False       # optional separator lines when spaced
+    header_bottom_gap_mm: float = 10.0  # Gap between header bottom and questions on pages 2+ (default 10mm)
+
+    # Rendering
+    zoom: float = 2.0
+
+    def page_size_pt(self) -> Tuple[float, float]:
+        if (self.page_preset or "").upper().strip() == "CUSTOM":
+            w_mm, h_mm = float(self.page_width_mm), float(self.page_height_mm)
+        else:
+            w_mm, h_mm = preset_size_mm(self.page_preset)
+
+        w_pt, h_pt = mm_to_pt(w_mm), mm_to_pt(h_mm)
+
+        if (self.orientation or "portrait").lower().startswith("land"):
+            return h_pt, w_pt
+        return w_pt, h_pt
+
+    def margins_pt(self) -> Tuple[float, float, float, float]:
+        return (
+            mm_to_pt(self.margin_left_mm),
+            mm_to_pt(self.margin_right_mm),
+            mm_to_pt(self.margin_top_mm),
+            mm_to_pt(self.margin_bottom_mm),
+        )
+
+    def column_gap_pt(self) -> float:
+        return mm_to_pt(self.column_gap_mm)
+
+    def question_gap_pt(self) -> float:
+        return mm_to_pt(self.question_gap_spaced_mm if self.spaced else self.question_gap_mm)
+    
+    def header_bottom_gap_pt(self) -> float:
+        """Convert header bottom gap from mm to pt"""
+        return mm_to_pt(self.header_bottom_gap_mm)
+
+
+# -------------------------
+# Gap Clamping Constants
+# -------------------------
+MIN_GAP_MM = 6.0   # Minimum gap between questions (mm)
+MAX_GAP_MM = 50.0  # Maximum gap between questions (mm)
+MIN_GAP_PT = mm_to_pt(MIN_GAP_MM)  # ~17.01 pt
+MAX_GAP_PT = mm_to_pt(MAX_GAP_MM)  # ~141.73 pt
+
+
+def clamp_gap_pt(gap_pt: Optional[float], default_gap_pt: float) -> float:
+    """
+    Clamp gap to MIN_GAP_PT..MAX_GAP_PT range.
+    
+    Args:
+        gap_pt: Custom gap in points (None = use default)
+        default_gap_pt: Default gap in points
+    
+    Returns:
+        Clamped gap in points
+    """
+    if gap_pt is None:
+        gap_pt = default_gap_pt
+    return max(MIN_GAP_PT, min(gap_pt, MAX_GAP_PT))
+
+
+# -------------------------
+# Internal rendering helpers
+# -------------------------
+def _safe_clip_from_norm(page: fitz.Page, norm_rect_xywh: Tuple[float, float, float, float]) -> Optional[fitz.Rect]:
+    """
+    norm_rect = (x, y, w, h) in 0..1 of rendered page.
+    Returns a safe clip rect (intersected with page rect) or None.
+    """
+    pr = page.rect
+    fx, fy, fw, fh = norm_rect_xywh
+
+    x0 = fx
+    y0 = fy
+    x1 = fx + fw
+    y1 = fy + fh
+
+    x0, x1 = sorted([x0, x1])
+    y0, y1 = sorted([y0, y1])
+
+    # clamp 0..1
+    x0 = max(0.0, min(1.0, x0))
+    x1 = max(0.0, min(1.0, x1))
+    y0 = max(0.0, min(1.0, y0))
+    y1 = max(0.0, min(1.0, y1))
+
+    clip = fitz.Rect(
+        pr.x0 + x0 * pr.width,
+        pr.y0 + y0 * pr.height,
+        pr.x0 + x1 * pr.width,
+        pr.y0 + y1 * pr.height,
+    )
+
+    clip = clip & pr
+    if clip.is_empty or clip.width < 2 or clip.height < 2:
+        return None
+    return clip
+
+
+def _render_selection_png_bytes(
+    doc: fitz.Document,
+    page_index: int,
+    norm_xywh: Tuple[float, float, float, float],
+    zoom: float,
+) -> Optional[Tuple[bytes, int, int]]:
+    if page_index < 0 or page_index >= doc.page_count:
+        return None
+
+    page = doc.load_page(page_index)
+    clip = _safe_clip_from_norm(page, norm_xywh)
+    if clip is None:
+        return None
+
+    mat = fitz.Matrix(zoom, zoom)
+    pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
+    return pix.tobytes("png"), pix.width, pix.height
+
+
+def _get_font_name(bold: bool = False) -> str:
+    """Roboto fontunu kullan, yoksa varsayılan fonta dön"""
+    try:
+        from reportlab.pdfbase.pdfmetrics import getFont
+        if getFont('Roboto-Bold' if bold else 'Roboto'):
+            return 'Roboto-Bold' if bold else 'Roboto'
+    except Exception:
+        pass
+    return 'Helvetica-Bold' if bold else 'Helvetica'
+
+
+def _draw_watermark_and_centerline(c: canvas.Canvas, page_w: float, page_h: float, opts: ExportOptions) -> None:
+    # Watermark (diagonal)
+    if getattr(opts, "watermark_enabled", False) and (getattr(opts, "watermark_text", "") or "").strip():
+        try:
+            c.saveState()
+            c.setFont("Helvetica-Bold", 40)
+            if hasattr(c, "setFillAlpha"):
+                c.setFillAlpha(float(getattr(opts, "watermark_opacity", 0.12)))
+            c.setFillGray(0.2)
+            c.translate(page_w / 2.0, page_h / 2.0)
+            c.rotate(35)
+            c.drawCentredString(0, 0, (opts.watermark_text or "").strip())
+            c.restoreState()
+        except Exception:
+            pass
+
+    # Center line + perfectly centered text - KALDIRILDI (menü ayarları kaldı)
+    pass
+
+
+def _draw_header(c: canvas.Canvas, page_w: float, page_h: float, opts: ExportOptions, page_num: int = 1) -> float:
+    """
+    İlk sayfada: Üstte turuncu yuvarlatılmış dikdörtgen, içinde turuncu dolu TEST ADI kutusu, altında açıklama
+    Diğer sayfalarda: Sağ üstte okul adı
+    """
+    ml, mr, mt, mb = opts.margins_pt()
+    y = page_h - mt
+    
+    if page_num == 1:
+        # İLK SAYFA: Turuncu çerçeveli header box (görüntüdeki şablon)
+        header_x_left = ml
+        header_x_right = page_w - mr
+        header_radius = 8.0  # Köşe yuvarlatma yarıçapı
+        
+        # İç turuncu dolu box (TEST ADI için) - ORTADA
+        inner_padding = 8.0
+        inner_height = 28.0
+        inner_y_top = y - inner_padding
+        inner_y_bottom = inner_y_top - inner_height
+        
+        # TEST ADI kutusu ortada olacak - genişliği yazıya göre ayarla
+        test_title = (opts.test_title.strip() or "TEST")
+        from reportlab.pdfbase.pdfmetrics import stringWidth, getFont
+        font_name_title = _get_font_name(bold=True)
+        font_size_title = 14
+        title_width = stringWidth(test_title, font_name_title, font_size_title)
+        inner_box_width = title_width + 16.0  # Yazı genişliği + padding
+        # Kutu ortada olacak
+        inner_x_left = header_x_left + (header_x_right - header_x_left - inner_box_width) / 2.0
+        inner_x_right = inner_x_left + inner_box_width
+        
+        # Açıklama metni için yükseklik hesapla (önce hesapla, sonra header yüksekliğini belirle)
+        font_name_desc = _get_font_name(bold=True)
+        font_size_desc = 10.0
+        font_obj_desc = getFont(font_name_desc)
+        font_height_desc = ((font_obj_desc.face.ascent - font_obj_desc.face.descent) / 1000.0) * font_size_desc
+        
+        # Açıklama metni - "TEST İLE İLGİLİ AÇIKLAMA" veya meta bilgiler
+        desc_text = "TEST İLE İLGİLİ AÇIKLAMA"
+        meta = []
+        if opts.school_name.strip():
+            meta.append(opts.school_name.strip())
+        if opts.branch_name.strip():
+            meta.append(f"Şube: {opts.branch_name.strip()}")
+        if opts.teacher_name.strip():
+            meta.append(f"Öğretmen: {opts.teacher_name.strip()}")
+        
+        if meta:
+            desc_text = " | ".join(meta)
+        
+        desc_available_width = (header_x_right - header_x_left) - 2 * inner_padding
+        desc_text_width = stringWidth(desc_text, font_name_desc, font_size_desc)
+        
+        # Metin kaç satır olacak?
+        desc_lines = max(1, int(desc_text_width / desc_available_width) + 1) if desc_available_width > 0 else 1
+        desc_height = max(mm_to_pt(10.0), desc_lines * font_height_desc * 1.2)  # Minimum 10mm, satır arası 1.2x
+        
+        # Header yüksekliğini hesapla (dinamik) - çizgi ile açıklama arası boşluk artırıldı
+        header_height = (inner_padding + inner_height + 4.0 + 1.0 +  # Çizgi kalınlığı dahil
+                          8.0 + desc_height + 4.0)  # Çizgi-açıklama arası boşluk (8pt) + desc_height + alt boşluk
+        header_y_top = y
+        header_y_bottom = y - header_height
+        
+        # ÖNCE dış turuncu çerçeve çiz (ARKADA KALACAK)
+        c.saveState()
+        c.setFillColorRGB(1, 1, 1)  # Beyaz iç
+        c.setStrokeColorRGB(1.0, 0.647, 0.0)  # Turuncu çerçeve
+        c.setLineWidth(1.5)
+        # Yuvarlatılmış dikdörtgen çiz (sadece çerçeve)
+        c.roundRect(header_x_left, header_y_bottom, header_x_right - header_x_left, header_height, header_radius, fill=1, stroke=1)
+        c.restoreState()
+        
+        # SONRA içeriği çiz (ÖNDE GÖRÜNECEK)
+        # İç turuncu dolu box (TEST ADI için)
+        c.saveState()
+        c.setFillColorRGB(1.0, 0.647, 0.0)  # Turuncu dolu
+        c.setStrokeColorRGB(1.0, 0.647, 0.0)
+        c.setLineWidth(0)
+        c.roundRect(inner_x_left, inner_y_bottom, inner_box_width, inner_height, 6.0, fill=1, stroke=0)
+        c.restoreState()
+        
+        # TEST ADI yazısı (beyaz, kalın)
+        c.saveState()
+        c.setFillColorRGB(1, 1, 1)  # Beyaz
+        c.setFont(font_name_title, font_size_title)
+        # Yazıyı iç box'un ortasına yerleştir
+        title_x = inner_x_left + inner_box_width / 2.0
+        # Dikey ortalama için font ascent kullan
+        font_obj_title = getFont(font_name_title)
+        font_ascent_title = (font_obj_title.face.ascent / 1000.0) * font_size_title
+        title_y = inner_y_bottom + (inner_height / 2.0) - (font_ascent_title / 2.0)
+        c.drawCentredString(title_x, title_y, test_title)
+        c.restoreState()
+        
+        # Test açıklaması ile başlık arası çizgi (üstten, turuncu, kalın, kenarlara değecek kadar uzat)
+        # Çizgiyi inner_y_bottom'ın ÜSTÜNDE çiz (TEST başlığı kutusunun altında)
+        line_r, line_g, line_b = 1.0, 0.647, 0.0  # Turuncu
+        c.saveState()
+        c.setLineWidth(1.0)  # Kalınlaştırıldı
+        c.setStrokeColorRGB(line_r, line_g, line_b)
+        # Çizgiyi inner_y_bottom'ın üstünde çiz (TEST başlığı kutusunun altında, açıklamanın üstünde)
+        line_y = inner_y_bottom - 4.0  # Inner box'tan 4pt aşağıda (PDF koordinat sisteminde yukarı)
+        # Dış dikdörtgenin kenarlarına değecek kadar uzat (inner_padding kullanma)
+        c.line(header_x_left, line_y, header_x_right, line_y)
+        c.restoreState()
+        
+        # Açıklama alanı (çizgiden sonra, altında, sol tarafta) - Çizgi ile açıklama arasına boşluk eklendi
+        desc_y_top = line_y - 8.0  # Çizgiden sonra 8pt boşluk (4pt'den 8pt'ye çıkarıldı)
+        desc_y_bottom = desc_y_top - desc_height  # Açıklama alanının alt kenarı
+        desc_y = desc_y_top - font_height_desc * 0.2  # İlk satırın baseline pozisyonu (üstten küçük bir margin)
+        
+        c.saveState()
+        c.setFillColorRGB(0, 0, 0)  # Siyah
+        c.setFont(font_name_desc, font_size_desc)  # Kalın
+        c.drawString(header_x_left + inner_padding, desc_y, desc_text)
+        c.restoreState()
+        
+        y = desc_y_bottom - 8.0  # Açıklamadan sonra boşluk (header ile sorular arasında boşluk)
+    else:
+        # DİĞER SAYFALAR: Banner (dikdörtgen, yuvarlatılmış kenarlar) - sağda okul adı, solda test başlığı
+        header_height = 40.0  # pt
+        header_y_top = y
+        header_y_bottom = y - header_height
+        # Banner genişliğini biraz azalt (kenarlardan 10pt içeride)
+        banner_margin = 10.0  # pt
+        header_x_left = ml + banner_margin
+        header_x_right = page_w - mr - banner_margin
+        header_radius = 8.0  # Köşe yuvarlatma yarıçapı
+        
+        # Dış turuncu çerçeve (sadece stroke, içi beyaz)
+        c.saveState()
+        c.setFillColorRGB(1, 1, 1)  # Beyaz iç
+        c.setStrokeColorRGB(1.0, 0.647, 0.0)  # Turuncu çerçeve
+        c.setLineWidth(1.5)
+        # Yuvarlatılmış dikdörtgen çiz (sadece çerçeve)
+        c.roundRect(header_x_left, header_y_bottom, header_x_right - header_x_left, header_height, header_radius, fill=1, stroke=1)
+        c.restoreState()
+        
+        # Sol tarafta: Test başlığı (turuncu renk)
+        test_title = (opts.test_title.strip() or "TEST")
+        c.saveState()
+        c.setFillColorRGB(1.0, 0.647, 0.0)  # Turuncu
+        c.setFont(_get_font_name(bold=True), 12)
+        from reportlab.pdfbase.pdfmetrics import getFont
+        font_obj_title = getFont(_get_font_name(bold=True))
+        font_ascent_title = (font_obj_title.face.ascent / 1000.0) * 12
+        title_y = header_y_bottom + (header_height / 2.0) - (font_ascent_title / 2.0)
+        c.drawString(header_x_left + 8.0, title_y, test_title)
+        c.restoreState()
+        
+        # Sağ tarafta: Okul adı (turuncu renk)
+        if opts.school_name.strip():
+            c.saveState()
+            c.setFillColorRGB(1.0, 0.647, 0.0)  # Turuncu
+            c.setFont(_get_font_name(bold=False), 10)
+            from reportlab.pdfbase.pdfmetrics import stringWidth, getFont
+            school_text = opts.school_name.strip()
+            school_width = stringWidth(school_text, _get_font_name(bold=False), 10)
+            font_obj_school = getFont(_get_font_name(bold=False))
+            font_ascent_school = (font_obj_school.face.ascent / 1000.0) * 10
+            school_y = header_y_bottom + (header_height / 2.0) - (font_ascent_school / 2.0)
+            school_x = header_x_right - school_width - 8.0
+            c.drawString(school_x, school_y, school_text)
+            c.restoreState()
+        
+        y = header_y_bottom - opts.header_bottom_gap_pt()  # Banner'dan sonra boşluk (header ile sorular arasında boşluk)
+    
+    return y
+
+
+def _apply_page_decorations(
+    c: canvas.Canvas,
+    page_w: float,
+    page_h: float,
+    opts: ExportOptions,
+    y_start: float,
+) -> None:
+    """Optional watermark and center line text/line."""
+    # Watermark (light, diagonal)
+    if opts.watermark_enabled and (opts.watermark_text or "").strip():
+        c.saveState()
+        try:
+            c.setFont(_get_font_name(bold=True), 54)
+            c.setFillColorRGB(0.85, 0.85, 0.85)
+            c.translate(page_w / 2.0, page_h / 2.0)
+            c.rotate(35)
+            c.drawCentredString(0, 0, opts.watermark_text.strip())
+        finally:
+            c.restoreState()
+
+    # Center line burada çizilmiyor (sütun bilgisi yok)
+    pass
+
+
+def build_export_options(base: ExportOptions, **overrides) -> ExportOptions:
+    """Robust builder: filters unknown keys so UI mismatches won't crash."""
+    allowed = {f.name for f in fields(ExportOptions)}
+    clean = {k: v for k, v in overrides.items() if k in allowed}
+    return replace(base, **clean)
+
+
+def _draw_center_line_text(c: canvas.Canvas, page_w: float, page_h: float, opts: ExportOptions) -> None:
+    """
+    Dikey yazıyı SAYFANIN TAM ORTASINDAKİ DİKEY ÇİZGİNİN ÜSTÜNE bindirir.
+    - Çizgi arkada kalır
+    - Yazı önde görünür ve çizgiyi KAPATIR (Word gibi)
+    """
+    if not (opts.center_line_enabled and (opts.center_line_text or "").strip()):
+        return
+
+    from reportlab.pdfbase.pdfmetrics import getFont, stringWidth
+
+    x_line_center = page_w / 2.0
+    page_y_center = page_h / 2.0
+
+    txt = opts.center_line_text.strip()
+
+    color = (opts.center_line_color or "#000000").lstrip("#")
+    if len(color) == 6:
+        r = int(color[0:2], 16) / 255.0
+        g = int(color[2:4], 16) / 255.0
+        b = int(color[4:6], 16) / 255.0
+    else:
+        r, g, b = 0, 0, 0
+
+    _ensure_roboto_font()
+    font_name = _get_font_name(bold=opts.center_line_bold)
+    font_size = 9
+
+    # Font yüksekliği (pt) -> dikey yazıda çizgi ile "üst üste" binmesi için X düzeltmesi gerekir
+    font_obj = getFont(font_name)
+    # face.ascent/descent 1000-em biriminde olur (ReportLab)
+    ascent = getattr(getattr(font_obj, "face", None), "ascent", 700)
+    descent = getattr(getattr(font_obj, "face", None), "descent", -200)
+    font_h = ((ascent - descent) / 1000.0) * font_size
+
+    # Yazı uzunluğu (rotate sonrası x ekseninde kalacak)
+    txt_w = stringWidth(txt, font_name, font_size)
+
+    c.saveState()
+    try:
+        c.setFont(font_name, font_size)
+
+        # ✅ Kritik: X'e font yüksekliğinin çeyreğini ekleyerek görsel merkez çizgiye oturur
+        # (Yarısı fazla olduğu için çeyreği kullanıyoruz)
+        c.translate(x_line_center + (font_h / 4.0), page_y_center)
+
+        direction = (opts.center_line_text_direction or "up").lower().strip()
+        rotation = 90 if direction == "up" else -90
+        c.rotate(rotation)
+
+        # ✅ Yazı çizgiyi kapatsın diye beyaz arkaplan şeridi (Word "metin kutusu" gibi)
+        pad = 2.0
+        c.setFillColorRGB(1, 1, 1)
+        c.rect(-txt_w / 2.0 - pad, -font_h / 2.0 - pad, txt_w + 2 * pad, font_h + 2 * pad, fill=1, stroke=0)
+
+        # Yazı rengi
+        c.setFillColorRGB(r, g, b)
+
+        # Yazıyı merkezden çiz
+        c.drawCentredString(0, 0, txt)
+    finally:
+        c.restoreState()
+
+
+def export_test_pdf(
+    selections: List[object],
+    out_path: Path,
+    opts: ExportOptions,
+    pdf_docs: Optional[Dict[str, fitz.Document]] = None,
+) -> None:
+    """
+    selections: Selection-like objects (pdf_key, page_index, norm, number, answer)
+    pdf_docs: mapping (pdf_key -> open fitz.Document). REQUIRED.
+    """
+    if pdf_docs is None:
+        raise RuntimeError("pdf_docs verilmedi. Export için açık PDF dokümanları gerekli.")
+
+    # Font yükleme işlemini başta yap
+    _ensure_roboto_font()
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    page_w, page_h = opts.page_size_pt()
+    c = canvas.Canvas(str(out_path), pagesize=(page_w, page_h))
+    _draw_watermark_and_centerline(c, page_w, page_h, opts)
+
+    ml, mr, mt, mb = opts.margins_pt()
+    col_gap = opts.column_gap_pt()
+    default_gap_after_q = opts.question_gap_pt()  # Varsayılan boşluk (her soru için custom yoksa kullanılacak)
+
+    # columns clamp
+    cols = int(opts.columns or 1)
+    if cols < 1:
+        cols = 1
+    if cols > 6:
+        cols = 6
+
+    content_w = page_w - ml - mr
+    # Çizgi sayfanın ortasında, sütunları çizgiye göre ayarla
+    x_line_center = page_w / 2.0  # Çizginin konumu
+    
+    # İlk sayfada header'ın sağ kenarı: page_w - mr (turuncu box'ın sağ kenarı)
+    # Sağ sütunun sağ kenarı bunu geçmemeli
+    header_right_edge = page_w - mr
+    
+    if cols > 1:
+        # Sütunlar eşit genişlikte olacak
+        # Sol taraftaki toplam alan: ml'den çizgiye kadar
+        # Sağ taraftaki toplam alan: çizgiden header_right_edge'e kadar (üstteki turuncu box'ın sağ kenarını geçemez)
+        left_space = x_line_center - ml
+        right_space = header_right_edge - x_line_center
+        
+        # Her iki tarafta da eşit sayıda sütun olacak şekilde hesapla
+        left_columns_count = (cols + 1) // 2
+        right_columns_count = cols - left_columns_count
+        
+        # Sol sütunlar arası boşlukları hesaba kat
+        if left_columns_count > 1:
+            left_col_w = (left_space - (left_columns_count - 1) * col_gap) / left_columns_count
+        else:
+            left_col_w = left_space
+        
+        # Sağ sütunlar arası boşlukları hesaba kat (header_right_edge'i geçmemeli)
+        if right_columns_count > 1:
+            right_col_w = (right_space - (right_columns_count - 1) * col_gap) / right_columns_count
+        else:
+            right_col_w = right_space
+        
+        # Sütun genişliği: her iki taraftan da eşit olacak şekilde minimum değeri al
+        # Bu sayede sağ sütun header'ın sağ kenarını geçmez ve sütunlar eşit genişlikte olur
+        col_w = min(left_col_w, right_col_w)
+    else:
+        # Tek sütun varsa, çizginin solunda kalmalı (çizgiye kadar)
+        col_w = x_line_center - ml
+
+    # Sayfa numarası takibi
+    page_num = 1
+    
+    # Header
+    y_start = _draw_header(c, page_w, page_h, opts, page_num)
+    _apply_page_decorations(c, page_w, page_h, opts, y_start)
+
+    # Çizgi rengini ayarla (tüm çizgiler için turuncu)
+    line_r, line_g, line_b = 1.0, 0.647, 0.0  # Turuncu (#FFA500)
+    
+    # ÖNCE ÇİZGİYİ ÇİZ (ARKADA KALACAK) - Footer bölgesinde çizilmemeli
+    if cols > 1:
+        c.saveState()
+        try:
+            c.setLineWidth(1.0)  # Kalınlaştırıldı
+            c.setStrokeColorRGB(line_r, line_g, line_b)  # Turuncu
+            x_line_center = page_w / 2.0
+            footer_y_top = mb + 35.0  # Footer'ın üst çizgisi
+            # Çizgiyi footer bölgesinin üstünde bitir (footer_y_top'a kadar)
+            c.line(x_line_center, footer_y_top, x_line_center, y_start)
+        finally:
+            c.restoreState()
+
+    # SONRA YAZIYI ÇİZ (ÖNDE) - çizgiyi kapatır
+    _draw_center_line_text(c, page_w, page_h, opts)
+
+    # Cursor - Çizgiye göre sütun konumlarını hesapla
+    x_line_center = page_w / 2.0
+    left_columns_count = (cols + 1) // 2  # Sol taraftaki sütun sayısı
+    
+    def get_column_x(col_index: int) -> float:
+        """Sütun indeksine göre X konumunu hesapla (çizgiye göre)"""
+        if cols == 1:
+            return ml  # Tek sütun varsa solda
+        if col_index < left_columns_count:
+            # Sol sütunlar: ml'den başla
+            return ml + col_index * (col_w + col_gap)
+        else:
+            # Sağ sütunlar: çizginin sağından başla (boşluğu azalt)
+            right_col_index = col_index - left_columns_count
+            reduced_gap = col_gap * 0.5  # Boşluğu yarıya indir
+            return x_line_center + reduced_gap + right_col_index * (col_w + reduced_gap)
+    
+    col_idx = 0
+    x_col = get_column_x(0)
+    y = y_start
+
+    answer_key: List[Tuple[int, str]] = []
+    # Her sayfa için cevap anahtarı takibi: {page_num: [(question_num, answer), ...]}
+    page_answers: Dict[int, List[Tuple[int, str]]] = {}
+    current_page_answers: List[Tuple[int, str]] = []  # Mevcut sayfadaki cevaplar
+    
+    # Varsayılan boşluk (her soru için custom boşluk yoksa kullanılacak)
+    default_gap_after_q = opts.question_gap_pt()
+
+    def draw_page_footer(canvas_obj, p_num: int, answers_list: List[Tuple[int, str]]):
+        """Sayfa altına cevap anahtarlarını ve sayfa numarasını çiz"""
+        # Çizgi rengi: Turuncu (#FFA500)
+        line_r, line_g, line_b = 1.0, 0.647, 0.0
+        
+        # Alt margin'dan başla (iki çizgi arası mesafe küçültüldü)
+        footer_y_bottom = mb + 15.0  # Alt çizgi pozisyonu
+        footer_y_top = mb + 35.0  # Üst çizgi pozisyonu
+        footer_y_center = (footer_y_bottom + footer_y_top) / 2.0  # İki çizgi arası orta nokta
+        
+        # İki çizgi arası cevap anahtarları
+        # Üst çizgi (tüm sayfa genişliğinde, sütun çizgisinden bağımsız)
+        canvas_obj.saveState()
+        canvas_obj.setLineWidth(0.5)
+        canvas_obj.setStrokeColorRGB(line_r, line_g, line_b)
+        canvas_obj.line(ml, footer_y_top, page_w - mr, footer_y_top)
+        canvas_obj.restoreState()
+        
+        # Cevap anahtarları (sayfa numarasına göre sıralı) - SOLA YASLANMIŞ
+        if answers_list:
+            canvas_obj.saveState()
+            canvas_obj.setFont(_get_font_name(bold=False), 9)
+            canvas_obj.setFillColorRGB(line_r, line_g, line_b)  # Turuncu renk
+            
+            # Cevap anahtarlarını sırala
+            sorted_answers = sorted(answers_list, key=lambda t: t[0])
+            answer_texts = []
+            for num, ans in sorted_answers:
+                # Cevap varsa göster, yoksa "?" göster
+                if ans and ans.strip():
+                    answer_texts.append(f"{num}. {ans}")
+                else:
+                    answer_texts.append(f"{num}. ?")
+            
+            # Cevap anahtarlarını çiz (SOLA YASLANMIŞ)
+            from reportlab.pdfbase.pdfmetrics import stringWidth
+            answer_text = "  ".join(answer_texts)
+            # Dikey ortalama için font ascent kullan
+            from reportlab.pdfbase.pdfmetrics import getFont
+            font_obj = getFont(_get_font_name(bold=False))
+            font_ascent = (font_obj.face.ascent / 1000.0) * 9
+            answer_x = ml  # Sola yaslanmış
+            answer_y = footer_y_center - font_ascent / 2.0
+            canvas_obj.drawString(answer_x, answer_y, answer_text)
+            canvas_obj.restoreState()
+        else:
+            # Cevap yoksa soru işareti göster (sola yaslanmış)
+            canvas_obj.saveState()
+            canvas_obj.setFont(_get_font_name(bold=False), 9)
+            canvas_obj.setFillColorRGB(line_r, line_g, line_b)  # Turuncu renk
+            from reportlab.pdfbase.pdfmetrics import getFont
+            font_obj = getFont(_get_font_name(bold=False))
+            font_ascent = (font_obj.face.ascent / 1000.0) * 9
+            answer_y = footer_y_center - font_ascent / 2.0
+            canvas_obj.drawString(ml, answer_y, "?")
+            canvas_obj.restoreState()
+        
+        # Alt çizgi (tüm sayfa genişliğinde, sütun çizgisinden bağımsız)
+        canvas_obj.saveState()
+        canvas_obj.setLineWidth(0.5)
+        canvas_obj.setStrokeColorRGB(line_r, line_g, line_b)
+        canvas_obj.line(ml, footer_y_bottom, page_w - mr, footer_y_bottom)
+        canvas_obj.restoreState()
+        
+        # Sayfa numarası (yuvarlak içinde, iki çizgi arasında, TAM ORTADA)
+        # Çizgi aralığı: footer_y_top - footer_y_bottom = 35.0 - 15.0 = 20.0 pt
+        # Daire yarıçapı çizgi aralığına sığmalı (20.0 pt / 2 = 10.0 pt maksimum)
+        footer_space = footer_y_top - footer_y_bottom  # 20.0 pt
+        max_circle_radius = footer_space / 2.0 - 2.0  # 2.0 pt güvenlik payı
+        circle_radius = min(12.0, max_circle_radius)  # Maksimum 12.0 pt ama çizgi aralığına sığmalı
+        
+        page_num_text = str(p_num)
+        canvas_obj.saveState()
+        canvas_obj.setFont(_get_font_name(bold=True), 10)
+        from reportlab.pdfbase.pdfmetrics import stringWidth, getFont
+        page_num_width = stringWidth(page_num_text, _get_font_name(bold=True), 10)
+        # Yuvarlak sayfanın ortasında olacak (x ekseninde)
+        circle_x = (ml + page_w - mr) / 2.0  # Tam orta
+        circle_y = footer_y_center  # İki çizgi arasında ortala
+        
+        # Yuvarlak çiz (turuncu çizgi rengi ile)
+        canvas_obj.setLineWidth(1.0)
+        canvas_obj.setStrokeColorRGB(line_r, line_g, line_b)
+        canvas_obj.setFillColorRGB(1, 1, 1)  # Beyaz iç
+        canvas_obj.circle(circle_x, circle_y, circle_radius, fill=1, stroke=1)
+        
+        # Sayfa numarası yazısı
+        canvas_obj.setFillColorRGB(0, 0, 0)
+        font_obj = getFont(_get_font_name(bold=True))
+        font_ascent = (font_obj.face.ascent / 1000.0) * 10
+        text_x = circle_x - page_num_width / 2.0
+        text_y = circle_y - font_ascent / 2.0
+        canvas_obj.drawString(text_x, text_y, page_num_text)
+        canvas_obj.restoreState()
+    
+    def new_page():
+        nonlocal y, col_idx, x_col, y_start, page_num, current_page_answers
+        # Mevcut sayfanın cevaplarını kaydet (yeni sayfaya geçmeden önce)
+        if current_page_answers:
+            page_answers[page_num] = list(current_page_answers)
+            # Mevcut sayfanın footer'ını çiz (sayfa değişmeden önce)
+            draw_page_footer(c, page_num, list(current_page_answers))
+            current_page_answers.clear()
+        
+        page_num += 1
+        c.showPage()
+        _draw_watermark_and_centerline(c, page_w, page_h, opts)
+        y_start = _draw_header(c, page_w, page_h, opts, page_num)
+        _apply_page_decorations(c, page_w, page_h, opts, y_start)
+
+        # Çizgi (her sayfada) - Footer bölgesinde çizilmemeli, turuncu ve kalın
+        if cols > 1:
+            c.saveState()
+            try:
+                c.setLineWidth(1.0)  # Kalınlaştırıldı
+                c.setStrokeColorRGB(line_r, line_g, line_b)  # Turuncu
+                x_line_center = page_w / 2.0
+                # Footer bölgesini atla (footer_y_top'a kadar çiz)
+                footer_y_top = mb + 35.0  # Footer'ın üst çizgisi
+                # Çizgiyi footer bölgesinin üstünde bitir (üst çizgiye değsin)
+                c.line(x_line_center, footer_y_top, x_line_center, y_start)
+            finally:
+                c.restoreState()
+
+        # Yazı (her sayfada)
+        _draw_center_line_text(c, page_w, page_h, opts)
+
+        col_idx = 0
+        x_col = get_column_x(0)
+        y = y_start
+
+    def next_column():
+        nonlocal col_idx, x_col, y
+        col_idx += 1
+        if col_idx >= cols:
+            new_page()
+        else:
+            x_col = get_column_x(col_idx)
+            y = y_start
+
+    q_fallback = 0
+    for sel in selections:
+        q_fallback += 1
+        number = int(getattr(sel, "number", q_fallback) or q_fallback)
+        ans = (getattr(sel, "answer", "") or "").strip().upper()
+        # Cevap anahtarına ekle (cevap yoksa boş string olarak ekle, footer'da "?" gösterilecek)
+        answer_key.append((number, ans))
+        # Mevcut sayfadaki cevaplara ekle (cevap yoksa boş string)
+        current_page_answers.append((number, ans))
+
+        pdf_key = getattr(sel, "pdf_key", None)
+        page_index = int(getattr(sel, "page_index", -1))
+        norm = getattr(sel, "norm", None)
+        if not pdf_key or norm is None:
+            continue
+
+        doc = pdf_docs.get(str(pdf_key))
+        if doc is None:
+            raise FileNotFoundError(f"PDF doc bulunamadı (pdf_key): {pdf_key}")
+
+        # display_scale varsa uygula (görselin boyutunu değiştirmek için)
+        display_scale = getattr(sel, 'display_scale', 1.0)
+        
+        # Custom boşluk varsa onu kullan, yoksa varsayılan boşluğu kullan
+        custom_gap_pt = getattr(sel, 'custom_gap_after_pt', None)
+        gap_after_q = custom_gap_pt if custom_gap_pt is not None else default_gap_after_q
+        
+        # Görseli orijinal zoom ile render et (kalite korunur)
+        rendered = _render_selection_png_bytes(doc, page_index, norm, opts.zoom)
+        if not rendered:
+            continue
+        png_bytes, img_w_px, img_h_px = rendered
+
+        # px -> pt approximation: pt ~= px / zoom
+        img_w_pt = img_w_px / float(opts.zoom)
+        img_h_pt = img_h_px / float(opts.zoom)
+        
+        # display_scale'ı görselin boyutuna uygula
+        img_w_pt *= display_scale
+        img_h_pt *= display_scale
+
+        # Resim içindeki yazıların 10 punto görünmesi için ölçekleme
+        # Orijinal PDF'deki yazı punto değerini tahmin et (varsayılan 12 punto)
+        # Eğer yazılar 12 punto ise ve 10 punto görmek istiyorsak: scale = 10/12 ≈ 0.833
+        original_text_size_pt = 12.0  # Orijinal PDF'deki varsayılan yazı punto değeri
+        target_text_size_pt = 10.0  # İstenen yazı punto değeri (resim içindeki yazıların görünen boyutu)
+        scale_factor = target_text_size_pt / original_text_size_pt  # Ölçek faktörü (10/12 = 0.833)
+        
+        # Orijinal görsel boyutunu ölçek faktörü ile çarp (en-boy oranı korunur)
+        aspect_ratio = img_w_pt / img_h_pt  # En-boy oranı
+        draw_h = img_h_pt * scale_factor  # Ölçeklenmiş yükseklik
+        draw_w = img_w_pt * scale_factor  # Ölçeklenmiş genişlik (en-boy oranı korunur)
+        
+        # -----------------------------
+        # Number label (boxed) + image (side-by-side)
+        # İSTENEN: Numara kutusunun ÜST KENARI ile görselin ÜST KENARI aynı hizaya gelsin.
+        # Not: ReportLab'de drawString y=baseline, drawImage ise y=bottom-left (anchor paramı
+        # bazı sürümlerde yok/ignore edilebiliyor). Bu yüzden "y_top" (satır üst kenarı)
+        # üzerinden her şeyi güvenli şekilde hesaplıyoruz.
+        # -----------------------------
+        number_text = f"{number}."
+        from reportlab.pdfbase.pdfmetrics import stringWidth, getFont
+
+        # Numara font ayarları
+        font_name_num = _get_font_name(bold=True)
+        font_size_num = 10.0
+        c.setFont(font_name_num, font_size_num)
+        number_width = stringWidth(number_text, font_name_num, font_size_num)
+
+        # Numara ölçüleri (kutu yok, sadece yazı)
+        font_obj_num = getFont(font_name_num)
+        font_ascent_num = (font_obj_num.face.ascent / 1000.0) * font_size_num
+        font_descent_num = abs(font_obj_num.face.descent / 1000.0) * font_size_num
+        text_height = font_ascent_num + font_descent_num
+        box_w = number_width  # Kutu yok, sadece yazı genişliği
+        box_h = text_height   # Kutu yok, sadece yazı yüksekliği
+
+        # Numara ile görsel arası boşluk
+        number_gap = 4.0
+        right_padding = 4.0  # sağ taraftan güvenlik payı
+
+        # Görselin kullanabileceği maksimum genişlik (numara genişliği + gap + sağ boşluk çıkarıldı)
+        available_width = col_w - box_w - number_gap - right_padding
+        
+        # Eğer görsel genişliği kullanılabilir alandan fazla ise, sığdır ve yüksekliği ayarla
+        if draw_w > available_width:
+            scale = available_width / draw_w
+            draw_w = available_width
+            draw_h = draw_h * scale
+
+        # Height needed: numara kutusu ve görsel aynı satırda, üst kenarlar hizalı.
+        needed = max(box_h, draw_h) + gap_after_q
+        if opts.spaced and opts.draw_separators:
+            needed += 14
+
+        # Footer yüksekliği: İki çizgi arası alan (35pt - 15pt = 20pt) + alt margin
+        footer_y_top = mb + 35.0
+        footer_y_bottom = mb + 15.0
+        effective_bottom = footer_y_top  # Footer'ın üst çizgisi, sorular buraya kadar gelebilir
+
+        # If doesn't fit current column, move column/page
+        if (y - needed) < effective_bottom:
+            next_column()
+
+        # If still doesn't fit (very tall question), put on fresh page column 0
+        if (y - needed) < effective_bottom and cols > 1:
+            new_page()
+
+        # --- Draw: number text (top-aligned with image) ---
+        # Satırın üst kenarı
+        y_top = y
+
+        # Numara yazısı: üst kenarı y_top ile hizalı
+        # ReportLab'de drawString y=baseline, bu yüzden baseline = y_top - font_ascent_num
+        c.saveState()
+        c.setFillColorRGB(0, 0, 0)  # siyah yazı (kutu yok)
+        y_text_baseline = y_top - font_ascent_num
+        c.setFont(font_name_num, font_size_num)
+        c.drawString(x_col, y_text_baseline, number_text)
+        c.restoreState()
+        
+        # Temp png
+        tmp_dir = out_path.parent / ".tm_export_tmp"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_file = tmp_dir / f"q_{number}.png"
+        tmp_file.write_bytes(png_bytes)
+
+        # --- Draw image ---
+        # ReportLab'de drawImage y=bottom-left. Biz y_top (üst) ile hizalamak için bottom'u hesaplıyoruz.
+        x_img = x_col + box_w + number_gap
+        y_img_bottom = y_top - draw_h
+        c.drawImage(
+            str(tmp_file),
+            x_img,
+            y_img_bottom,
+            width=draw_w,
+            height=draw_h,
+            preserveAspectRatio=True,
+        )
+        
+        # Y koordinatını güncelle - kutu ve görselden hangisi daha yüksekse ona göre
+        y = y_top - max(box_h, draw_h) - gap_after_q
+
+        # Optional separator + extra spacing
+        if opts.spaced and opts.draw_separators:
+            y -= 6
+            c.saveState()
+            c.setLineWidth(0.5)
+            c.setStrokeColorRGB(line_r, line_g, line_b)  # Ayarlanabilir çizgi rengi
+            c.line(x_col, y, x_col + col_w, y)
+            c.restoreState()
+            y -= 8
+
+        # gap_after_q zaten yukarıdaki satırda çıkarıldı, tekrar çıkarmaya gerek yok
+
+    # Son sayfanın cevaplarını kaydet ve footer'ını çiz
+    if current_page_answers:
+        page_answers[page_num] = list(current_page_answers)
+    
+    # Son sayfanın footer'ını çiz
+    if page_num > 0:
+        last_page_answers = page_answers.get(page_num, [])
+        draw_page_footer(c, page_num, last_page_answers)
+
+    # PDF'yi kaydet
+    c.save()
+
+    # Cleanup temp
+    try:
+        tmp_dir = out_path.parent / ".tm_export_tmp"
+        if tmp_dir.exists():
+            for p in tmp_dir.glob("*.png"):
+                try:
+                    p.unlink()
+                except Exception:
+                    pass
+            try:
+                tmp_dir.rmdir()
+            except Exception:
+                pass
+    except Exception:
+        pass

@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+backend/.venv/
+__pycache__/
+*.pyc
+.venv/
+
+# Build outputs
+dist/
+build/
+*.egg-info/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Env
+.env
+.env.local
+
+# Uploads / storage (user data)
+backend/storage/
