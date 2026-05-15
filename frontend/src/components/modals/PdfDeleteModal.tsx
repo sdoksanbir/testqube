@@ -7,9 +7,16 @@ type PdfDeleteModalProps = {
   open: boolean;
   onClose: () => void;
   onPdfDeleted?: (deletedId: string) => void;
+  /** Bu PDF'lerde seçili soru var, silinemez */
+  pdfIdsWithQuestions?: string[];
 };
 
-export default function PdfDeleteModal({ open, onClose, onPdfDeleted }: PdfDeleteModalProps) {
+export default function PdfDeleteModal({
+  open,
+  onClose,
+  onPdfDeleted,
+  pdfIdsWithQuestions = [],
+}: PdfDeleteModalProps) {
   const [pdfs, setPdfs] = useState<PdfItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,6 +56,11 @@ export default function PdfDeleteModal({ open, onClose, onPdfDeleted }: PdfDelet
   };
 
   const handleDeleteClick = (pdf: PdfItem) => {
+    if (pdfIdsWithQuestions.includes(pdf.id)) {
+      setError("Bu PDF'de seçili sorular var, o yüzden silinemez. Önce soruları kaldırın.");
+      return;
+    }
+    setError(null);
     setConfirmPdf(pdf);
   };
 
@@ -68,7 +80,7 @@ export default function PdfDeleteModal({ open, onClose, onPdfDeleted }: PdfDelet
       >
         <div className="mb-4 flex items-center justify-between">
           <h3 id="pdf-delete-title" className="text-base font-semibold text-white">
-            PDF Sil
+            Sunucu PDF Sil
           </h3>
           <button
             type="button"

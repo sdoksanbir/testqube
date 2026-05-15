@@ -1,95 +1,234 @@
-const colorSwatches = [
-  "#f08c2e",
-  "#2fa7d8",
-  "#1da466",
-  "#a78cc4",
-  "#e8cbbf",
-  "#f2e316",
-  "#b7d7e6",
-  "#f34a2f",
-  "#bfbfbf"
-];
+import { useState } from "react";
+import { useEditorStore } from "../../store/editorStore";
+import { PAPER_SIZE_OPTIONS, PAPER_PRESETS_MM } from "../../constants/paperSizes";
+import WatermarkModal from "../modals/WatermarkModal";
+import CustomMarginsModal, { cmToMm } from "../modals/CustomMarginsModal";
 
 export default function AdvancedSettingsPanel() {
+  const paperSize = useEditorStore((s) => s.paperSize);
+  const setPaperSize = useEditorStore((s) => s.setPaperSize);
+  const paperWidthMm = useEditorStore((s) => s.paperWidthMm);
+  const paperHeightMm = useEditorStore((s) => s.paperHeightMm);
+  const setPaperSizeCustom = useEditorStore((s) => s.setPaperSizeCustom);
+  const orientation = useEditorStore((s) => s.orientation);
+  const setOrientation = useEditorStore((s) => s.setOrientation);
+  const columns = useEditorStore((s) => s.columns);
+  const setColumns = useEditorStore((s) => s.setColumns);
+  const watermarkEnabled = useEditorStore((s) => s.watermarkEnabled);
+  const watermarkSettings = useEditorStore((s) => s.watermarkSettings);
+  const themeColor = useEditorStore((s) => s.themeColor);
+  const setWatermarkEnabled = useEditorStore((s) => s.setWatermarkEnabled);
+  const setWatermarkSettings = useEditorStore((s) => s.setWatermarkSettings);
+  const marginTopMm = useEditorStore((s) => s.marginTopMm);
+  const marginBottomMm = useEditorStore((s) => s.marginBottomMm);
+  const marginLeftMm = useEditorStore((s) => s.marginLeftMm);
+  const marginRightMm = useEditorStore((s) => s.marginRightMm);
+  const setMargins = useEditorStore((s) => s.setMargins);
+  const setActiveTab = useEditorStore((s) => s.setActiveTab);
+  const tabBeforeSettings = useEditorStore((s) => s.tabBeforeSettings);
+  const [watermarkModalOpen, setWatermarkModalOpen] = useState(false);
+  const [marginsModalOpen, setMarginsModalOpen] = useState(false);
+  const isCustom = paperSize === "Tam Boyutu Belirleyin";
+
+  const handleWatermarkCheck = (checked: boolean) => {
+    if (checked) {
+      setWatermarkModalOpen(true);
+    } else {
+      setWatermarkEnabled(false);
+    }
+  };
+
+  const handleWatermarkConfirm = (settings: import("../modals/WatermarkModal").WatermarkSettings) => {
+    setWatermarkSettings(settings);
+    setWatermarkEnabled(true);
+    setWatermarkModalOpen(false);
+  };
+
+  const MARGIN_PRESETS = [
+    { value: "normal", label: "Normal", mm: 15 },
+    { value: "dar", label: "Dar", mm: 5 },
+    { value: "genis", label: "Geniş", mm: 20 },
+  ] as const;
+  const marginPreset =
+    marginTopMm === marginBottomMm && marginBottomMm === marginLeftMm && marginLeftMm === marginRightMm
+      ? MARGIN_PRESETS.find((p) => p.mm === marginTopMm)?.value ?? "normal"
+      : "normal";
+
+  const settingsRowClass =
+    "grid min-w-0 items-center gap-x-2 gap-y-1 [grid-template-columns:minmax(5.5rem,7.5rem)_1fr]";
+
   return (
-    <section className="space-y-5 text-slate-100">
-      <h3 className="text-sm font-semibold text-slate-200">Gelişmiş Ayarlar</h3>
+    <section className="flex min-w-0 flex-col gap-4 text-slate-100">
+      <h3 className="tq-sidebar-section-title text-slate-100">Gelişmiş Ayarlar</h3>
 
-      <label className="flex items-center gap-2 text-sm text-slate-200">
-        <input type="checkbox" className="h-4 w-4" />
-        Akıllı soru yerleşimi uygula
-      </label>
-      <label className="flex items-center gap-2 text-sm text-slate-200">
-        <input type="checkbox" className="h-4 w-4" />
-        Filigran ekle
-      </label>
-
-      <div className="space-y-2">
-        <h4 className="text-sm font-semibold text-slate-200">Sayfa tasarım rengi belirle:</h4>
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-slate-300">Renk:</span>
-          {colorSwatches.map((color) => (
-            <button
-              key={color}
-              type="button"
-              className="grid h-6 w-6 place-items-center rounded border border-slate-500"
-              style={{ backgroundColor: color }}
-              aria-label={`Renk ${color}`}
-            />
-          ))}
-          <button type="button" className="grid h-6 w-6 place-items-center rounded border border-slate-500 bg-slate-700 text-sm font-bold text-white">
-            +
+      <label className="flex cursor-pointer items-center gap-2">
+        <input
+          type="checkbox"
+          className="h-4 w-4 shrink-0 rounded border-slate-500"
+          checked={watermarkEnabled}
+          onChange={(e) => handleWatermarkCheck(e.target.checked)}
+        />
+        <span className="tq-row-label">Filigran ekle</span>
+        {watermarkEnabled && (
+          <button
+            type="button"
+            onClick={() => setWatermarkModalOpen(true)}
+            className="tq-link-quiet ml-1 text-blue-400 underline-offset-2 hover:text-blue-300 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+          >
+            (Ayarla)
           </button>
+        )}
+      </label>
+      <WatermarkModal
+        isOpen={watermarkModalOpen}
+        onClose={() => setWatermarkModalOpen(false)}
+        onConfirm={handleWatermarkConfirm}
+        initial={watermarkSettings}
+        themeColor={themeColor}
+      />
+
+      <div className="flex flex-col gap-3">
+        <div className={settingsRowClass}>
+          <span className="tq-field-label text-slate-300">Kağıt boyutu</span>
+          <select value={paperSize} onChange={(e) => setPaperSize(e.target.value)} className="tq-select min-w-0">
+            {PAPER_SIZE_OPTIONS.map((opt) => (
+              <option key={opt} value={opt}>
+                {opt}
+              </option>
+            ))}
+          </select>
+        </div>
+        {isCustom && (
+          <div className={settingsRowClass}>
+            <span className="tq-field-label text-slate-300">En × Boy (mm)</span>
+            <div className="flex min-w-0 flex-wrap items-center gap-2">
+              <input
+                type="number"
+                min={50}
+                max={1000}
+                value={paperWidthMm}
+                onChange={(e) => setPaperSizeCustom(Number(e.target.value) || 210, paperHeightMm)}
+                className="tq-input tq-input--number tq-input--narrow"
+              />
+              <span className="tq-field-label shrink-0 text-slate-400">×</span>
+              <input
+                type="number"
+                min={50}
+                max={1000}
+                value={paperHeightMm}
+                onChange={(e) => setPaperSizeCustom(paperWidthMm, Number(e.target.value) || 297)}
+                className="tq-input tq-input--number tq-input--narrow"
+              />
+              <span className="tq-field-label shrink-0 text-slate-400">mm</span>
+            </div>
+          </div>
+        )}
+        <div className={settingsRowClass}>
+          <span className="tq-field-label text-slate-300">Yönlendirme</span>
+          <select
+            value={orientation}
+            onChange={(e) => setOrientation(e.target.value as "portrait" | "landscape")}
+            className="tq-select min-w-0"
+          >
+            <option value="portrait">Dikey</option>
+            <option value="landscape">Yatay</option>
+          </select>
+        </div>
+        <div className={settingsRowClass}>
+          <span className="tq-field-label text-slate-300">Sütun sayısı</span>
+          <select
+            value={columns}
+            onChange={(e) => setColumns(Number(e.target.value))}
+            className="tq-select min-w-0"
+          >
+            {[1, 2, 3, 4, 5, 6].map((n) => (
+              <option key={n} value={n}>
+                {n}
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 
-      <div className="space-y-3">
-        <div className="grid grid-cols-[120px_1fr] items-center gap-2">
-          <label className="text-sm text-slate-300">Kağıt boyutu:</label>
-          <select className="h-10 rounded-lg border border-slate-600 bg-slate-800 px-3 text-sm text-white outline-none ring-blue-500 focus:ring">
-            <option>A4 (210 x 297 mm)</option>
-          </select>
-        </div>
-        <div className="grid grid-cols-[120px_1fr] items-center gap-2">
-          <label className="text-sm text-slate-300">Yönlendirme:</label>
-          <select className="h-10 rounded-lg border border-slate-600 bg-slate-800 px-3 text-sm text-white outline-none ring-blue-500 focus:ring">
-            <option>Dikey</option>
-          </select>
-        </div>
-        <div className="grid grid-cols-[120px_1fr] items-center gap-2">
-          <label className="text-sm text-slate-300">Sütun sayısı:</label>
-          <select className="h-10 rounded-lg border border-slate-600 bg-slate-800 px-3 text-sm text-white outline-none ring-blue-500 focus:ring">
-            <option>2</option>
-          </select>
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <h4 className="text-sm font-semibold text-slate-200">Kenar boşluklarını ayarla:</h4>
-        <div className="grid grid-cols-[50px_1fr] gap-3 rounded-lg border border-slate-700 bg-slate-800/60 p-3 text-sm text-slate-200">
-          <div className="h-12 w-10 border border-slate-500 bg-slate-700/50" />
-          <div className="grid grid-cols-2 gap-x-3 gap-y-1">
-            <span>Üst: 1,5 cm</span>
-            <span>Alt: 1,5 cm</span>
-            <span>Sol: 1,5 cm</span>
-            <span>Sağ: 1,5 cm</span>
-            <select className="col-span-1 mt-1 h-9 rounded-lg border border-slate-600 bg-slate-800 px-2 text-sm text-white">
-              <option>Normal</option>
-            </select>
-            <button type="button" className="col-span-1 mt-1 h-9 text-left text-sm text-slate-300 underline">
-              Özel kenar boşlukları
-            </button>
+      <div className="flex flex-col gap-2">
+        <h4 className="tq-subsection-title">Kenar boşluklarını ayarla</h4>
+        <div className="tq-options-card flex gap-3">
+          <div className="relative h-14 w-11 shrink-0 overflow-hidden rounded border border-slate-600 bg-gradient-to-b from-sky-900/50 to-slate-700">
+            <div
+              className="absolute border border-dashed border-slate-500"
+              style={{
+                top: 4,
+                left: 4,
+                right: 4,
+                bottom: 4,
+              }}
+            />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+              <div className="flex justify-between gap-2">
+                <span className="tq-row-label">Üst:</span>
+                <span className="tq-row-label tabular-nums">{(marginTopMm / 10).toLocaleString("tr-TR")} cm</span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="tq-row-label">Alt:</span>
+                <span className="tq-row-label tabular-nums">{(marginBottomMm / 10).toLocaleString("tr-TR")} cm</span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="tq-row-label">Sol:</span>
+                <span className="tq-row-label tabular-nums">{(marginLeftMm / 10).toLocaleString("tr-TR")} cm</span>
+              </div>
+              <div className="flex justify-between gap-2">
+                <span className="tq-row-label">Sağ:</span>
+                <span className="tq-row-label tabular-nums">{(marginRightMm / 10).toLocaleString("tr-TR")} cm</span>
+              </div>
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <select
+                className="tq-select w-auto min-w-[6.5rem] max-w-full shrink-0"
+                value={marginPreset}
+                onChange={(e) => {
+                  const preset = MARGIN_PRESETS.find((p) => p.value === e.target.value);
+                  if (preset) setMargins(preset.mm, preset.mm, preset.mm, preset.mm);
+                }}
+              >
+                {MARGIN_PRESETS.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => setMarginsModalOpen(true)}
+                className="tq-link-quiet border-b border-dotted border-slate-400 text-slate-300 transition hover:border-slate-300 hover:text-white focus-visible:rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400"
+              >
+                Özel kenar boşlukları
+              </button>
+            </div>
           </div>
         </div>
       </div>
-
-      <button type="button" className="inline-flex h-10 items-center gap-2 rounded-lg bg-slate-700 px-4 text-sm font-medium text-slate-200">
-        <span>→</span>
-        Diğer ayarları göster
-      </button>
+      <CustomMarginsModal
+        open={marginsModalOpen}
+        onClose={() => setMarginsModalOpen(false)}
+        onConfirm={(m) => {
+          setMargins(cmToMm(m.topCm), cmToMm(m.bottomCm), cmToMm(m.leftCm), cmToMm(m.rightCm));
+        }}
+        marginTopMm={marginTopMm}
+        marginBottomMm={marginBottomMm}
+        marginLeftMm={marginLeftMm}
+        marginRightMm={marginRightMm}
+        pageWidthMm={isCustom ? paperWidthMm : (PAPER_PRESETS_MM[paperSize]?.[0] ?? 210)}
+        pageHeightMm={isCustom ? paperHeightMm : (PAPER_PRESETS_MM[paperSize]?.[1] ?? 297)}
+      />
 
       <div>
-        <button type="button" className="h-11 rounded-lg bg-blue-600 px-8 text-base font-semibold text-white">
+        <button
+          type="button"
+          onClick={() => setActiveTab(tabBeforeSettings ?? "test-paper")}
+          className="tq-btn-primary min-h-[var(--tq-control-height)] px-8"
+        >
           Tamam
         </button>
       </div>

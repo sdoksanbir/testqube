@@ -1,14 +1,24 @@
 # Dependencies
 node_modules/
 backend/.venv/
+.venv/
+venv/
+
+# Python cache
 __pycache__/
 *.pyc
-.venv/
+*.pyo
+*.pyd
 
 # Build outputs
 dist/
 build/
 *.egg-info/
+.next/
+coverage/
+
+# Logs
+*.log
 
 # IDE / OS
 .idea/
@@ -16,9 +26,18 @@ build/
 *.swp
 .DS_Store
 
-# Env
+# Environment variables
 .env
 .env.local
+.env.production
+.env.development
 
-# Uploads / storage (user data)
+# Uploads / storage
 backend/storage/
+
+# Database
+*.sqlite3
+
+# Misc
+tmp/
+temp/

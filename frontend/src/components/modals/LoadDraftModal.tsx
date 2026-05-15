@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { DraftInfo } from "../../types";
 import { api } from "../../api/client";
 import { useEditorStore } from "../../store/editorStore";
+import type { DraftFilePayload } from "../../store/editorStore";
 
 type LoadDraftModalProps = {
   open: boolean;
@@ -12,9 +13,8 @@ export default function LoadDraftModal({ open, onClose }: LoadDraftModalProps) {
   const [drafts, setDrafts] = useState<DraftInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const setQuestions = useEditorStore((s) => s.setQuestions);
-  const setTestName = useEditorStore((s) => s.setTestName);
-  const setSchoolName = useEditorStore((s) => s.setSchoolName);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const applyDraftPayload = useEditorStore((s) => s.applyDraftPayload);
 
   const fetchDrafts = async () => {
     setLoading(true);
@@ -33,19 +33,53 @@ export default function LoadDraftModal({ open, onClose }: LoadDraftModalProps) {
     if (open) fetchDrafts();
   }, [open]);
 
-  const handleLoad = async (name: string) => {
+  const handleLoad = async (draftName: string) => {
     setError(null);
     try {
-      const draft = await api.drafts.load(name);
-      setQuestions(draft.questions);
-      if (draft.test_info) {
-        setTestName(draft.test_info.test_title ?? draft.test_info.test_name ?? "");
-        setSchoolName(draft.test_info.school_name ?? "");
-      }
+      const draft = await api.drafts.load(draftName);
+      const payload: DraftFilePayload = {
+        name: draft.name ?? draftName,
+        questions: draft.questions,
+        notes: draft.notes,
+        test_info: draft.test_info,
+        export_settings: draft.export_settings as DraftFilePayload["export_settings"],
+        editor_state: (draft as DraftFilePayload).editor_state,
+      };
+      applyDraftPayload(payload);
       onClose();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Taslak yüklenemedi");
     }
+  };
+
+  const handleLoadFromFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const draft = JSON.parse(reader.result as string);
+        if (draft.questions && Array.isArray(draft.questions)) {
+          const payload: DraftFilePayload = {
+            name: draft.name ?? "Yüklü Taslak",
+            questions: draft.questions,
+            notes: draft.notes,
+            test_info: draft.test_info,
+            export_settings: draft.export_settings,
+            editor_state: draft.editor_state,
+          };
+          applyDraftPayload(payload);
+          onClose();
+        } else {
+          setError("Geçersiz taslak dosyası");
+        }
+      } catch {
+        setError("Dosya okunamadı");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
   };
 
   if (!open) return null;
@@ -62,7 +96,24 @@ export default function LoadDraftModal({ open, onClose }: LoadDraftModalProps) {
 
         {error && <p className="mb-3 text-sm text-rose-600">{error}</p>}
 
-        <div className="max-h-64 overflow-auto rounded-lg border border-slate-200">
+        <div className="mb-3">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".testqube,.json"
+            className="hidden"
+            onChange={handleLoadFromFile}
+          />
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="w-full rounded-lg border border-emerald-500 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100"
+          >
+            Bilgisayardan dosya seç (.testqube)
+          </button>
+        </div>
+
+        <div className="max-h-48 overflow-auto rounded-lg border border-slate-200">
           {loading ? (
             <p className="p-4 text-center text-sm text-slate-500">Yükleniyor…</p>
           ) : drafts.length === 0 ? (

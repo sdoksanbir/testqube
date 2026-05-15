@@ -1,3 +1,4 @@
+import io
 import re
 import uuid
 from datetime import datetime
@@ -6,6 +7,7 @@ from typing import Dict, List
 
 import fitz
 from fastapi import UploadFile
+from PIL import Image
 
 from app.core.config import UPLOAD_DIR
 from app.models.schemas import PdfItem
@@ -99,6 +101,30 @@ class PdfService:
             pix = page.get_pixmap(matrix=mat, alpha=False)
             return pix.tobytes("png")
 
+    def remove_background_from_png_bytes(self, png_bytes: bytes) -> bytes:
+        """Make near-white/light pixels fully transparent. Public API."""
+        return self._remove_background_from_png(png_bytes)
+
+    def _remove_background_from_png(self, png_bytes: bytes) -> bytes:
+        """Make near-white/light background pixels fully transparent (alpha=0)."""
+        img = Image.open(io.BytesIO(png_bytes))
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        pixels = img.load()
+        w, h = img.size
+        threshold = 220
+
+        for y in range(h):
+            for x in range(w):
+                r, g, b, a = pixels[x, y]
+                avg = (r + g + b) / 3
+                if avg >= threshold:
+                    pixels[x, y] = (r, g, b, 0)
+
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
     def crop_page_png(
         self,
         pdf_id: str,
@@ -107,9 +133,10 @@ class PdfService:
         norm_y: float,
         norm_w: float,
         norm_h: float,
+        remove_background: bool = False,
     ) -> bytes:
         """Crop page region using normalized coordinates (0..1).
-        Converts to PDF points via page.rect. Zoom-invariant (desktop parity).
+        If remove_background, whitens near-white pixels.
         """
         item = self.get_pdf(pdf_id)
         path = Path(item.path)
@@ -122,4 +149,8 @@ class PdfService:
             h_pt = norm_h * rect.height
             clip = fitz.Rect(x_pt, y_pt, x_pt + w_pt, y_pt + h_pt)
             pix = page.get_pixmap(clip=clip, alpha=False)
-            return pix.tobytes("png")
+            png_bytes = pix.tobytes("png")
+
+        if remove_background:
+            png_bytes = self._remove_background_from_png(png_bytes)
+        return png_bytes

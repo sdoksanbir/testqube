@@ -3,9 +3,13 @@
  * Desktop parity: norm (0..1) is the only persistent format. Zoom is display-only.
  *
  * Coordinate systems:
- * - Display: pixel coords in the visible/rendered image container (includes any CSS scale)
+ * - Display: pixel coords in the visible/rendered image container (baseSize * zoom/100)
  * - Image: pixel coords in the actual image dimensions (naturalWidth × naturalHeight)
  * - Norm: 0..1 relative to page, zoom-invariant persistent format
+ *
+ * IMPORTANT: Image and overlay MUST use the SAME display dimensions (computed from
+ * baseSize * zoom/100). Do NOT mix getBoundingClientRect with explicit width/height
+ * — browser rounding and async layout cause cross-browser inconsistencies.
  */
 
 export interface NormRect {
@@ -13,6 +17,88 @@ export interface NormRect {
   y: number;
   width: number;
   height: number;
+}
+
+export interface Size2D {
+  w: number;
+  h: number;
+}
+
+/**
+ * Compute size to fit (contain) image inside container while preserving aspect ratio.
+ * Used for "fit to viewer" zoom calculation.
+ */
+export function computeContainedSize(
+  containerW: number,
+  containerH: number,
+  imageW: number,
+  imageH: number
+): Size2D {
+  if (imageW <= 0 || imageH <= 0) return { w: 1, h: 1 };
+  const scale = Math.min(
+    containerW / Math.max(1, imageW),
+    containerH / Math.max(1, imageH)
+  );
+  return {
+    w: Math.round(imageW * scale),
+    h: Math.round(imageH * scale),
+  };
+}
+
+/**
+ * Canonical display size: naturalSize * (zoomPercent/100).
+ * zoom 100 = 1:1 natural size. Use for BOTH image and overlay.
+ */
+export function computeDisplayedSize(
+  naturalSize: Size2D | null,
+  zoomPercent: number
+): { w: number; h: number } {
+  if (!naturalSize || naturalSize.w <= 0 || naturalSize.h <= 0) {
+    return { w: 1, h: 1 };
+  }
+  return {
+    w: Math.round(naturalSize.w * (zoomPercent / 100)),
+    h: Math.round(naturalSize.h * (zoomPercent / 100)),
+  };
+}
+
+/**
+ * Zoom percent that would make naturalSize fit inside container (contain).
+ * Result: when zoom = this value, displayedSize = computeContainedSize(...).
+ */
+export function computeFitZoomPercent(
+  containerW: number,
+  containerH: number,
+  naturalW: number,
+  naturalH: number
+): number {
+  if (naturalW <= 0 || naturalH <= 0) return 100;
+  const fit = computeContainedSize(containerW, containerH, naturalW, naturalH);
+  return Math.round((fit.w / naturalW) * 100);
+}
+
+/**
+ * Zoom percent so that image WIDTH fits container (genişlik sayfaya sığar).
+ */
+export function computeFitZoomByWidth(
+  containerW: number,
+  naturalW: number,
+  naturalH: number
+): number {
+  if (naturalW <= 0) return 100;
+  return Math.round((containerW / naturalW) * 100);
+}
+
+/**
+ * Zoom percent so that image HEIGHT fits container (yükseklik sayfaya sığar).
+ */
+export function computeFitZoomByHeight(
+  containerH: number,
+  naturalW: number,
+  naturalH: number
+): number {
+  if (naturalH <= 0) return 100;
+  return Math.round((containerH / naturalH) * 100);
 }
 
 export interface DisplayRect {

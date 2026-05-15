@@ -1,0 +1,75 @@
+/**
+ * TestQube editor — design tokens (typography, spacing, radii, layout).
+ * Components reference these via var(--tq-*) or .tq-* utility classes in ui.css.
+ */
+:root {
+  color-scheme: light;
+
+  /* --- Typography: single family app-wide --- */
+  --tq-font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+
+  /* Scale (rem); fluid where it helps zoom / scaling */
+  --tq-text-page-title: clamp(1.0625rem, 1rem + 0.2vw, 1.1875rem);
+  --tq-text-section: clamp(0.9375rem, 0.9rem + 0.12vw, 1rem);
+  --tq-text-label: 0.8125rem;
+  --tq-text-body: 0.875rem;
+  --tq-text-input: 0.875rem;
+  --tq-text-helper: 0.8125rem;
+  --tq-text-button: 0.875rem;
+  --tq-text-card-title: 1rem;
+  --tq-text-card-body: 0.875rem;
+
+  --tq-weight-regular: 400;
+  --tq-weight-medium: 500;
+  --tq-weight-semibold: 600;
+  --tq-weight-bold: 700;
+
+  --tq-leading-none: 1.1;
+  --tq-leading-tight: 1.25;
+  --tq-leading-snug: 1.35;
+  --tq-leading-normal: 1.45;
+  --tq-leading-relaxed: 1.55;
+
+  /* --- Spacing scale: 4 / 8 / 12 / 16 / 20 / 24 / 32 --- */
+  --tq-space-1: 0.25rem;
+  --tq-space-2: 0.5rem;
+  --tq-space-3: 0.75rem;
+  --tq-space-4: 1rem;
+  --tq-space-5: 1.25rem;
+  --tq-space-6: 1.5rem;
+  --tq-space-8: 2rem;
+
+  /* --- Radius --- */
+  --tq-radius-sm: 0.375rem;
+  --tq-radius-md: 0.5rem;
+  --tq-radius-lg: 0.625rem;
+  --tq-radius-xl: 0.75rem;
+  --tq-radius-2xl: 1rem;
+
+  /* --- Control heights (inputs, selects, bar buttons) --- */
+  --tq-control-height: 2.5rem;
+  --tq-control-padding-x: 0.75rem;
+  --tq-control-icon: 2.25rem;
+
+  /* --- Layout --- */
+  --tq-sidebar-width: clamp(17.75rem, 26vw, 22.5rem);
+  --tq-main-padding: clamp(var(--tq-space-3), 1.2vw + 0.5rem, var(--tq-space-5));
+  --tq-shell-gap: var(--tq-space-2);
+
+  /* Breakpoint references (for media queries in CSS only) */
+  --tq-bp-compact: 90rem; /* ~1440 */
+  --tq-bp-medium: 100rem; /* ~1600 */
+
+  /* --- Focus (a11y) --- */
+  --tq-focus-ring: 0 0 0 2px #fff, 0 0 0 4px #3b82f6;
+  --tq-focus-ring-inset: inset 0 0 0 2px #3b82f6;
+
+  /* --- Surfaces (light main / dark sidebar) --- */
+  --tq-main-surface: #f8fafc;
+  --tq-card-border: rgb(203 213 225);
+}
+
+/* Fluid root: readable on 1280×720+, scales up to ~1080p width */
+html.tq-editor-root {
+  font-size: clamp(14px, 0.8125rem + 0.35vw, 16px);
+}

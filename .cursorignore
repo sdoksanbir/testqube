@@ -1,0 +1,26 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/.pytest_cache/
+
+# Node
+frontend/node_modules/
+frontend/.next/
+frontend/dist/
+frontend/build/
+frontend/.cache/
+
+# Git & macOS
+.git/
+__MACOSX/
+.DS_Store
+
+# Logs & DB
+*.log
+*.sqlite
+*.db
+
+# Generated
+coverage/
+tmp/
+temp/

@@ -1,16 +1,53 @@
+@import "./styles/tokens.css";
 @import "tailwindcss";
+@import "./styles/ui.css";
 
 :root {
   color-scheme: light;
 }
 
+html.tq-editor-root {
+  text-size-adjust: 100%;
+  -webkit-text-size-adjust: 100%;
+}
+
+html.tq-editor-root,
 body {
   margin: 0;
-  font-family: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  min-width: 0;
+  font-family: var(--tq-font-sans);
   background: #e8ebf2;
   color: #0f172a;
 }
 
 #root {
   min-height: 100vh;
+  min-width: 0;
+}
+
+/* PDF Önizleme Modal - Temaya uygun scrollbar (slate dark) */
+.pdf-preview-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #475569 #1e293b;
+}
+.pdf-preview-scroll *::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.pdf-preview-scroll *::-webkit-scrollbar-track {
+  background: #1e293b;
+  border-radius: 4px;
+}
+.pdf-preview-scroll *::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+.pdf-preview-scroll *::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+.pdf-preview-scroll *::-webkit-scrollbar-thumb:active {
+  background: #3b82f6;
+}
+.pdf-preview-scroll *::-webkit-scrollbar-corner {
+  background: #1e293b;
 }

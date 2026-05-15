@@ -1,10 +1,39 @@
+import { useState } from "react";
+import { useEditorStore } from "../../store/editorStore";
+import PdfPreviewModal from "../modals/PdfPreviewModal";
+
+/** Eski masaüstü projesindeki gibi: tıklanınca PDF önizleme diyaloğu açılır. */
 export default function PreparePaperButton() {
+  const questions = useEditorStore((s) => s.questions);
+  const activeTab = useEditorStore((s) => s.activeTab);
+  const [error, setError] = useState<string | null>(null);
+  const [showPreview, setShowPreview] = useState(false);
+
+  const handleClick = () => {
+    if (questions.length === 0) {
+      setError("Lütfen önce soru ekleyin.");
+      return;
+    }
+    setError(null);
+    setShowPreview(true);
+  };
+
   return (
-    <button
-      type="button"
-      className="w-full rounded-lg bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-white shadow transition hover:bg-emerald-400"
-    >
-      Kağıdı Hazırla
-    </button>
+    <div className="flex min-w-0 flex-col gap-2">
+      {error && <p className="tq-helper-error">{error}</p>}
+      <button
+        type="button"
+        onClick={handleClick}
+        disabled={questions.length === 0}
+        className="tq-sidebar-cta tq-sidebar-cta--prepare shadow-sm"
+      >
+        Kağıdı Hazırla
+      </button>
+      <PdfPreviewModal
+        isOpen={showPreview}
+        onClose={() => setShowPreview(false)}
+        variant={activeTab === "trial-exam" ? "trial" : "test"}
+      />
+    </div>
   );
 }
